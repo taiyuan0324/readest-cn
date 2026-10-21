@@ -833,9 +833,10 @@ export class TxtToEpubConverter {
 
     let isNested = false;
     let navPoints = '';
+    let tocOrder = 0;
     for (const { chapter, index } of entries) {
       const id = 'chapter' + (index + 1);
-      const playOrder = index + 1;
+      const playOrder = ++tocOrder;
       if (chapter.isVolume && isNested) {
         navPoints += '</navPoint>\n';
         isNested = !isNested;
