@@ -577,7 +577,7 @@ export class TxtToEpubConverter {
   ): Chapter[] {
     const { language } = metadata;
     const { fallbackParagraphsPerChapter } = option;
-    let sanitizedSegment = segment;
+    let sanitizedSegment = segment.replace(/\r\n?/g, '\n');
     let previousSegment: string;
     do {
       previousSegment = sanitizedSegment;
@@ -604,7 +604,7 @@ export class TxtToEpubConverter {
         const chunks = paragraphs.slice(i, i + fallbackParagraphsPerChapter);
         const formattedSegment = this.formatSegment(chunks.join('\n'));
         const title = `${chapterOffset + chapters.length + 1}`;
-        const content = `<h2>${title}</h2><p>${formattedSegment}</p>`;
+        const content = `<p>${formattedSegment}</p>`;
         chapters.push({ title, content, isVolume: false, detected: false });
       }
       return chapters;
@@ -641,7 +641,7 @@ export class TxtToEpubConverter {
       const formattedSegment = this.formatSegment(initialContent);
       segmentChapters.unshift({
         title: escapeXml(segmentTitle),
-        content: `<h3></h3><p>${formattedSegment}</p>`,
+        content: `<p>${formattedSegment}</p>`,
         isVolume: false,
         detected: false,
       });
@@ -657,7 +657,7 @@ export class TxtToEpubConverter {
   ): number {
     const { language } = metadata;
     const { fallbackParagraphsPerChapter } = option;
-    let sanitizedSegment = segment;
+    let sanitizedSegment = segment.replace(/\r\n?/g, '\n');
     let previousSegment: string;
     do {
       previousSegment = sanitizedSegment;
@@ -689,7 +689,7 @@ export class TxtToEpubConverter {
   }
 
   private createSegmentRegex(linesBetweenSegments: number): RegExp {
-    return new RegExp(`(?:\\r?\\n){${linesBetweenSegments},}|-{8,}\r?\n`);
+    return new RegExp(`(?:\\r\\n|\\r|\\n){${linesBetweenSegments},}|-{8,}(?:\\r\\n|\\r|\\n)`);
   }
 
   private formatSegment(segment: string): string {
@@ -812,6 +812,50 @@ export class TxtToEpubConverter {
     return chapterRegexps;
   }
 
+  private createTocNavPoints(chapters: Chapter[]): string {
+    const detectedEntries = chapters
+      .map((chapter, index) => ({ chapter, index }))
+      .filter(({ chapter }) => chapter.detected !== false);
+
+    // If there are no detected headings, keep one useful navigation target instead
+    // of exposing implementation-only split labels such as "1", "2", and "3".
+    const entries =
+      detectedEntries.length > 0
+        ? detectedEntries
+        : chapters.length > 0
+          ? [
+              {
+                chapter: { ...chapters[0]!, title: '正文', isVolume: false, detected: true },
+                index: 0,
+              },
+            ]
+          : [];
+
+    let isNested = false;
+    let navPoints = '';
+    for (const { chapter, index } of entries) {
+      const id = 'chapter' + (index + 1);
+      const playOrder = index + 1;
+      if (chapter.isVolume && isNested) {
+        navPoints += '</navPoint>\n';
+        isNested = !isNested;
+      }
+      navPoints +=
+        '<navPoint id="navPoint-' + id + '" playOrder="' + playOrder + '">\n' +
+        '<navLabel><text>' + chapter.title + '</text></navLabel>\n' +
+        '<content src="./OEBPS/' + id + '.xhtml" />\n';
+      if (chapter.isVolume && !isNested) {
+        isNested = !isNested;
+      } else {
+        navPoints += '</navPoint>\n';
+      }
+    }
+    if (isNested) {
+      navPoints += '</navPoint>';
+    }
+    return navPoints;
+  }
+
   private async createEpub(chapters: Chapter[], metadata: Metadata): Promise<Blob> {
     await configureZip();
     const { BlobWriter, TextReader, ZipWriter } = await import('@zip.js/zip.js');
@@ -832,29 +876,8 @@ export class TxtToEpubConverter {
 
     await zipWriter.add('META-INF/container.xml', new TextReader(containerXml), zipWriteOptions);
 
-    // Create navigation points for TOC
-    let isNested = false;
-    let navPoints = ``;
-    for (let i = 0; i < chapters.length; i++) {
-      const id = `chapter${i + 1}`;
-      const playOrder = i + 1;
-      if (chapters[i]!.isVolume && isNested) {
-        navPoints += `</navPoint>\n`;
-        isNested = !isNested;
-      }
-      navPoints +=
-        `<navPoint id="navPoint-${id}" playOrder="${playOrder}">\n` +
-        `<navLabel><text>${chapters[i]!.title}</text></navLabel>\n` +
-        `<content src="./OEBPS/${id}.xhtml" />\n`;
-      if (chapters[i]!.isVolume && !isNested) {
-        isNested = !isNested;
-      } else {
-        navPoints += `</navPoint>\n`;
-      }
-    }
-    if (isNested) {
-      navPoints += `</navPoint>`;
-    }
+    // Synthetic sections remain in the spine, but only detected headings appear in the TOC.
+    const navPoints = this.createTocNavPoints(chapters);
 
     // Add NCX file (table of contents)
     const tocNcx = `<?xml version="1.0" encoding="UTF-8"?>

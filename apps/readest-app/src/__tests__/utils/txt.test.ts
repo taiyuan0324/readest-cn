@@ -5,6 +5,8 @@ import { TxtToEpubConverter } from '@/utils/txt';
 
 type TxtConverterExtractAPI = {
   createChapterRegexps(language: string): RegExp[];
+  createSegmentRegex(linesBetweenSegments: number): RegExp;
+  createTocNavPoints(chapters: { title: string; isVolume: boolean; detected?: boolean }[]): string;
   joinAroundUndefined(arr: (string | undefined)[]): string[];
   isGoodMatches(matches: string[], maxLength?: number): boolean;
   extractChaptersFromSegment(
@@ -12,7 +14,7 @@ type TxtConverterExtractAPI = {
     metadata: { bookTitle: string; author: string; language: string; identifier: string },
     option: { linesBetweenSegments: number; fallbackParagraphsPerChapter: number },
     chapterOffset: number,
-  ): { title: string; content: string; isVolume: boolean }[];
+  ): { title: string; content: string; isVolume: boolean; detected?: boolean }[];
 };
 
 const getApi = (): TxtConverterExtractAPI =>
@@ -38,6 +40,20 @@ const getFirstRegex = (language: string) => {
   const api = getApi();
   return api.createChapterRegexps(language)[0]!;
 };
+
+describe('TXT line endings', () => {
+  it('recognizes Chinese chapter headings when the source uses bare CR separators', () => {
+    const chapters = extractChapters('第一章 开始\r正文一\r第二章 继续\r正文二', 'zh');
+    expect(chapters.map((chapter) => chapter.title)).toEqual(['第一章 开始', '第二章 继续']);
+    expect(chapters[0]!.content).toContain('正文一');
+    expect(chapters[1]!.content).toContain('正文二');
+  });
+
+  it('splits segment boundaries across bare CR blank lines', () => {
+    const regex = getApi().createSegmentRegex(2);
+    expect('开头\r\r结尾'.split(regex)).toEqual(['开头', '结尾']);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Chinese chapter regex — matching tests
@@ -420,6 +436,7 @@ describe('extractChaptersFromSegment — Chinese (zh)', () => {
     const chapters = extractChapters('这是前文内容\n第一章 开始\n正文内容', 'zh');
     expect(chapters.length).toBeGreaterThanOrEqual(2);
     expect(chapters[0]!.content).toContain('前文');
+    expect(chapters[0]!.content).not.toContain('<h3></h3>');
   });
 
   it('should not extract 第N封信 letter markers as chapters (issue #4658)', () => {
@@ -493,10 +510,10 @@ describe('extractChaptersFromSegment — English (en)', () => {
     expect(chapters.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('should fall back to paragraph splitting when fallback is enabled', () => {
+  it('should fall back to paragraph splitting without injecting fake chapter headings', () => {
     const text = 'Line one.\nLine two.\nLine three.\nLine four.';
     const api = getApi();
-    // With no chapter headings and fallback enabled, should split by paragraphs
+    // The split is only for manageable EPUB spine sections, not a chapter detection result.
     const chapters = api.extractChaptersFromSegment(
       text,
       metadata('en'),
@@ -504,6 +521,8 @@ describe('extractChaptersFromSegment — English (en)', () => {
       0,
     );
     expect(chapters.length).toBe(2);
+    expect(chapters.every((chapter) => chapter.detected === false)).toBe(true);
+    expect(chapters.every((chapter) => !/<h[1-6]>\s*\d+\s*<\/h[1-6]>/.test(chapter.content))).toBe(true);
   });
 
   it('should detect chapter headings via regex match even if extraction is imperfect', () => {
@@ -516,6 +535,40 @@ describe('extractChaptersFromSegment — English (en)', () => {
     expect(fresh().test('\nPrologue\n')).toBe(true);
     // Non-chapter text should not match
     expect(fresh().test('Just some regular text')).toBe(false);
+  });
+});
+
+describe('createTocNavPoints', () => {
+  it('uses one generic TOC entry for headingless text split into synthetic sections', () => {
+    const api = getApi();
+    const navPoints = api.createTocNavPoints([
+      { title: '1', isVolume: false, detected: false },
+      { title: '2', isVolume: false, detected: false },
+      { title: '3', isVolume: false, detected: false },
+    ]);
+
+    expect(navPoints).toContain('<text>正文</text>');
+    expect(navPoints).toContain('chapter1.xhtml');
+    expect(navPoints).not.toContain('chapter2.xhtml');
+    expect(navPoints).not.toContain('chapter3.xhtml');
+    expect(navPoints).not.toContain('<text>1</text>');
+    expect(navPoints).not.toContain('<text>2</text>');
+  });
+
+  it('omits unrecognized prefix text but preserves detected headings and their spine indexes', () => {
+    const api = getApi();
+    const navPoints = api.createTocNavPoints([
+      { title: '站点说明', isVolume: false, detected: false },
+      { title: '第一章 开始', isVolume: false, detected: true },
+      { title: '第二章 继续', isVolume: false, detected: true },
+    ]);
+
+    expect(navPoints).not.toContain('<text>站点说明</text>');
+    expect(navPoints).toContain('<text>第一章 开始</text>');
+    expect(navPoints).toContain('<text>第二章 继续</text>');
+    expect(navPoints).toContain('chapter2.xhtml');
+    expect(navPoints).toContain('chapter3.xhtml');
+    expect(navPoints).not.toContain('chapter1.xhtml');
   });
 });
 
