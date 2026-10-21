@@ -568,6 +568,9 @@ describe('createTocNavPoints', () => {
     expect(navPoints).toContain('<text>第二章 继续</text>');
     expect(navPoints).toContain('chapter2.xhtml');
     expect(navPoints).toContain('chapter3.xhtml');
+    expect(navPoints).toContain('playOrder="1"');
+    expect(navPoints).toContain('playOrder="2"');
+    expect(navPoints).not.toContain('playOrder="3"');
     expect(navPoints).not.toContain('chapter1.xhtml');
   });
 });
